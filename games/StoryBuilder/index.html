@@ -152,8 +152,8 @@
             useEffect(() => {
                 if (!user || !roomCode || !db) return;
                 
-                // Using APP_ID for the collection path to keep data organized
-                const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', `sb_room_${roomCode}`);
+                // FIXED: Added 'rooms' segment to ensure even number of segments (6)
+                const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rooms', `sb_room_${roomCode}`);
                 
                 const unsubscribe = onSnapshot(roomRef, (snapshot) => {
                     if (snapshot.exists()) {
@@ -194,7 +194,8 @@
                 };
 
                 try {
-                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', `sb_room_${code}`), initialState);
+                    // FIXED: Added 'rooms' segment
+                    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'rooms', `sb_room_${code}`), initialState);
                     setView('lobby');
                 } catch (e) {
                     console.error(e);
@@ -206,7 +207,8 @@
                 if (!userName.trim()) return setError("Please enter a name");
                 if (!roomCode || roomCode.length !== 4) return setError("Invalid room code");
                 
-                const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', `sb_room_${roomCode}`);
+                // FIXED: Added 'rooms' segment
+                const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rooms', `sb_room_${roomCode}`);
                 try {
                     const snap = await getDoc(roomRef);
                     if (!snap.exists()) return setError("Room not found");
@@ -364,7 +366,8 @@
 
         const LobbyView = ({ gameState, user, db, appId }) => {
             const isHost = gameState.hostId === user.uid;
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `sb_room_${gameState.code}`);
+            // FIXED: Added 'rooms' segment
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `sb_room_${gameState.code}`);
 
             const startGame = async () => await updateDoc(roomRef, { status: 'writing' });
             const changeGenre = async (e) => await updateDoc(roomRef, { genre: e.target.value });
@@ -441,7 +444,8 @@
         };
 
         const GameController = ({ gameState, user, db, appId }) => {
-            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', `sb_room_${gameState.code}`);
+            // FIXED: Added 'rooms' segment
+            const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', `sb_room_${gameState.code}`);
             const [submission, setSubmission] = useState('');
             const [hasSubmitted, setHasSubmitted] = useState(false);
             const [selectedVote, setSelectedVote] = useState(null);
