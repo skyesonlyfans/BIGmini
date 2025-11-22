@@ -113,14 +113,14 @@
 
         // --- CONSTANTS ---
         const CATEGORIES = [
-            { id: '9', name: 'General Knowledge' },
-            { id: '11', name: 'Film' },
-            { id: '12', name: 'Music' },
-            { id: '15', name: 'Video Games' },
-            { id: '17', name: 'Science' },
-            { id: '23', name: 'History' },
-            { id: '10', name: 'Books' },
-            { id: '21', name: 'Sports' }
+            { id: '9', name: 'General Knowledge', icon: 'globe' },
+            { id: '11', name: 'Film', icon: 'film' },
+            { id: '12', name: 'Music', icon: 'music' },
+            { id: '15', name: 'Video Games', icon: 'gamepad-2' },
+            { id: '17', name: 'Science', icon: 'flask-conical' },
+            { id: '23', name: 'History', icon: 'scroll' },
+            { id: '10', name: 'Books', icon: 'book' },
+            { id: '21', name: 'Sports', icon: 'trophy' }
         ];
 
         const DIFFICULTIES = ['easy', 'medium', 'hard'];
@@ -202,6 +202,7 @@
                     currentQuestionIndex: 0,
                     questions: [], 
                     currentAnswers: {}, 
+                    liveVotes: {}, // For mid-game voting
                     timerEnd: 0,
                     
                     // Settings
@@ -340,18 +341,16 @@
             const startGame = async () => {
                 // Tally Votes
                 const catVotes = {};
-                const diffVotes = {};
                 gameState.players.forEach(p => {
-                    const v = p.votes || { category: '9', difficulty: 'medium' };
+                    const v = p.votes || { category: '9' };
                     catVotes[v.category] = (catVotes[v.category] || 0) + 1;
-                    diffVotes[v.difficulty] = (diffVotes[v.difficulty] || 0) + 1;
                 });
-
                 const winnerCat = Object.keys(catVotes).reduce((a, b) => catVotes[a] > catVotes[b] ? a : b);
-                const winnerDiff = Object.keys(diffVotes).reduce((a, b) => diffVotes[a] > diffVotes[b] ? a : b);
-
+                
+                // Difficulty always medium for simplicity or voted? Let's use Medium default
+                // Fetch first 3 questions
                 try {
-                    const res = await fetch(`https://opentdb.com/api.php?amount=10&category=${winnerCat}&difficulty=${winnerDiff}&type=multiple`);
+                    const res = await fetch(`https://opentdb.com/api.php?amount=3&category=${winnerCat}&difficulty=medium&type=multiple`);
                     const data = await res.json();
                     
                     if (data.response_code !== 0) throw new Error("API Error");
@@ -369,6 +368,7 @@
                         timerEnd: Date.now() + (gameState.timerDuration * 1000)
                     });
                 } catch (e) {
+                    console.error(e);
                     alert("Failed to fetch questions. Try changing votes.");
                 }
             };
@@ -401,19 +401,21 @@
                     <div className="flex flex-col md:flex-row gap-6">
                         {/* Player Voting */}
                         <div className="flex-1 glass-panel p-6 rounded-2xl">
-                            <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-cyan-400"><Icon name="vote" /> Vote Settings</h2>
+                            <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-cyan-400"><Icon name="vote" /> Vote Round 1</h2>
                             <div className="space-y-4">
                                 <div>
-                                    <label className="text-xs text-slate-500 font-bold uppercase">Vote Category</label>
-                                    <select value={myData.votes?.category || '9'} onChange={e => updateMyVote('category', e.target.value)} className="w-full bg-slate-900 p-3 rounded-lg border border-slate-700 mt-1 text-white">
-                                        {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className="text-xs text-slate-500 font-bold uppercase">Vote Difficulty</label>
-                                    <select value={myData.votes?.difficulty || 'medium'} onChange={e => updateMyVote('difficulty', e.target.value)} className="w-full bg-slate-900 p-3 rounded-lg border border-slate-700 mt-1 text-white capitalize">
-                                        {DIFFICULTIES.map(d => <option key={d} value={d}>{d}</option>)}
-                                    </select>
+                                    <label className="text-xs text-slate-500 font-bold uppercase">First Category</label>
+                                    <div className="grid grid-cols-2 gap-2 mt-2">
+                                        {CATEGORIES.map(c => (
+                                            <button 
+                                                key={c.id} 
+                                                onClick={() => updateMyVote('category', c.id)}
+                                                className={`p-2 rounded text-sm font-bold flex items-center gap-2 ${myData.votes?.category === c.id ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400'}`}
+                                            >
+                                                <Icon name={c.icon} size={14} /> {c.name}
+                                            </button>
+                                        ))}
+                                    </div>
                                 </div>
                                 
                                 {gameState.gameMode === 'teams' && (
@@ -447,7 +449,7 @@
 
                     {isHost ? (
                         <button onClick={startGame} className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 py-4 rounded-xl font-bold text-lg shadow-lg shadow-green-500/20">
-                            Start Game with Voted Settings
+                            Start Game (Round 1)
                         </button>
                     ) : (
                         <div className="text-center p-4 bg-slate-800/50 rounded-xl animate-pulse text-slate-400">
@@ -471,37 +473,106 @@
 
                 const timer = setInterval(() => {
                     const now = Date.now();
+                    
+                    // Question Timeout
                     if (gameState.status === 'question' && now > gameState.timerEnd) {
                          updateDoc(roomRef, { status: 'reveal' });
+                    }
+                    
+                    // Vote Timeout
+                    if (gameState.status === 'category_vote' && now > gameState.timerEnd) {
+                        endCategoryVote();
                     }
                 }, 1000);
 
                 return () => clearInterval(timer);
-            }, [isHost, gameState.status, gameState.timerEnd]);
+            }, [isHost, gameState.status, gameState.timerEnd, gameState.liveVotes]);
 
             const submitAnswer = async (ans) => {
                 if (gameState.status !== 'question' || myAnswer) return;
                 await updateDoc(roomRef, { [`currentAnswers.${user.uid}`]: ans });
             };
 
+            const castLiveVote = async (catId) => {
+                await updateDoc(roomRef, { [`liveVotes.${user.uid}`]: catId });
+            }
+
+            const endCategoryVote = async () => {
+                // Tally Live Votes
+                const votes = gameState.liveVotes || {};
+                const counts = {};
+                // If no votes, pick random
+                let winner = CATEGORIES[Math.floor(Math.random() * CATEGORIES.length)].id;
+                
+                if (Object.keys(votes).length > 0) {
+                    Object.values(votes).forEach(v => counts[v] = (counts[v] || 0) + 1);
+                    winner = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
+                }
+
+                try {
+                    // Fetch next batch of 3
+                    const res = await fetch(`https://opentdb.com/api.php?amount=3&category=${winner}&difficulty=medium&type=multiple`);
+                    const data = await res.json();
+                    
+                    const newQuestions = data.results.map(q => ({
+                        question: decodeHTML(q.question),
+                        correctAnswer: decodeHTML(q.correct_answer),
+                        allAnswers: shuffle([...q.incorrect_answers, q.correct_answer].map(decodeHTML))
+                    }));
+
+                    // Append questions
+                    const updatedQuestions = [...gameState.questions, ...newQuestions];
+
+                    await updateDoc(roomRef, {
+                        questions: updatedQuestions,
+                        status: 'question',
+                        currentQuestionIndex: gameState.currentQuestionIndex + 1, // Advance to the new question
+                        timerEnd: Date.now() + (gameState.timerDuration * 1000)
+                    });
+
+                } catch (e) {
+                    console.error("Fetch failed", e);
+                    // If fail, maybe end game or retry? For now, end game.
+                    await updateDoc(roomRef, { status: 'finished' });
+                }
+            };
+
             const nextQuestion = async () => {
-                const isLast = gameState.currentQuestionIndex + 1 >= gameState.questions.length;
+                const currentIndex = gameState.currentQuestionIndex;
+                const totalQuestions = gameState.questions.length;
                 
                 // Calculate Scores
                 const newPlayers = gameState.players.map(p => {
                     const ans = gameState.currentAnswers[p.uid];
                     const isCorrect = ans === currentQ.correctAnswer;
-                    // Standard 100 points
                     return isCorrect ? { ...p, score: p.score + 100 } : p;
                 });
 
-                if (isLast) {
-                    await updateDoc(roomRef, { players: newPlayers, status: 'finished' });
+                // Check if we need to vote for new category (Every 3 questions)
+                // e.g., Index 0, 1, 2 (Length 3). Next is 3. 3 % 3 == 0.
+                const nextIndex = currentIndex + 1;
+                
+                if (nextIndex >= totalQuestions) {
+                    // We need more questions! Trigger Vote.
+                    // Or if we hit max limit (say 12), finish.
+                    if (totalQuestions >= 12) {
+                        await updateDoc(roomRef, { players: newPlayers, status: 'finished' });
+                    } else {
+                        // Enter Voting Phase
+                         await updateDoc(roomRef, { 
+                            players: newPlayers,
+                            status: 'category_vote',
+                            currentAnswers: {}, 
+                            liveVotes: {},
+                            timerEnd: Date.now() + 15000 // 15s to vote
+                        });
+                    }
                 } else {
+                    // Just next question
                     await updateDoc(roomRef, { 
                         players: newPlayers,
                         status: 'question',
-                        currentQuestionIndex: gameState.currentQuestionIndex + 1,
+                        currentQuestionIndex: nextIndex,
                         currentAnswers: {}, 
                         timerEnd: Date.now() + (gameState.timerDuration * 1000) 
                     });
@@ -509,18 +580,48 @@
             };
 
             if (gameState.status === 'finished') return <Leaderboard gameState={gameState} />;
+            
+            if (gameState.status === 'category_vote') {
+                return (
+                    <div className="max-w-xl mx-auto flex flex-col items-center animate-pop">
+                        <div className="w-full text-center mb-8">
+                            <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-400 to-cyan-400 mb-2">NEXT ROUND VOTE</h2>
+                            <p className="text-slate-400">Choose the next category!</p>
+                            {isHost && <div className="text-xs mt-2 text-slate-500">Timer handles transition automatically</div>}
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4 w-full">
+                             {CATEGORIES.map(c => {
+                                 const myVote = gameState.liveVotes?.[user.uid];
+                                 const isSelected = myVote === c.id;
+                                 return (
+                                     <button 
+                                        key={c.id} 
+                                        onClick={() => castLiveVote(c.id)}
+                                        className={`p-4 rounded-xl font-bold flex flex-col items-center gap-2 transition-all ${isSelected ? 'bg-cyan-600 text-white scale-105 border-2 border-cyan-400' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+                                     >
+                                         <Icon name={c.icon} size={24} />
+                                         {c.name}
+                                     </button>
+                                 );
+                             })}
+                        </div>
+                    </div>
+                );
+            }
 
             return (
                 <div className="max-w-xl mx-auto flex flex-col items-center">
                     {/* Progress & Score */}
                     <div className="w-full flex justify-between items-center mb-4 text-xs font-bold uppercase tracking-widest text-slate-500">
-                        <span>Question {gameState.currentQuestionIndex + 1} / {gameState.questions.length}</span>
+                        <span>Question {gameState.currentQuestionIndex + 1}</span>
                         <span className="text-cyan-400">Score: {gameState.players.find(p => p.uid === user.uid)?.score || 0}</span>
                     </div>
                     
                     <div className="w-full h-2 bg-slate-800 rounded-full mb-6 overflow-hidden">
+                        {/* Progress based on 12 max questions approx */}
                         <div className="h-full bg-cyan-500 transition-all duration-1000" 
-                             style={{ width: `${((gameState.currentQuestionIndex + 1) / gameState.questions.length) * 100}%` }}></div>
+                             style={{ width: `${((gameState.currentQuestionIndex + 1) / 12) * 100}%` }}></div>
                     </div>
 
                     <div className="glass-panel p-6 rounded-2xl w-full mb-6">
@@ -556,9 +657,16 @@
                             </div>
 
                             {isHost && (
-                                <button onClick={nextQuestion} className="w-full bg-cyan-600 hover:bg-cyan-500 py-4 rounded-xl font-bold text-white shadow-lg shadow-cyan-500/30">
-                                    Next Question <Icon name="arrow-right" size={18} className="inline ml-2"/>
-                                </button>
+                                <div className="flex flex-col gap-2">
+                                    <button onClick={nextQuestion} className="w-full bg-cyan-600 hover:bg-cyan-500 py-4 rounded-xl font-bold text-white shadow-lg shadow-cyan-500/30">
+                                        Next Question <Icon name="arrow-right" size={18} className="inline ml-2"/>
+                                    </button>
+                                    {(gameState.currentQuestionIndex + 1) % 3 === 0 && (gameState.currentQuestionIndex + 1) < 12 && (
+                                        <div className="text-xs text-fuchsia-400 font-bold uppercase tracking-widest animate-pulse">
+                                            Upcoming: Category Vote!
+                                        </div>
+                                    )}
+                                </div>
                             )}
                             {!isHost && <div className="text-slate-500 animate-pulse">Waiting for host...</div>}
                         </div>
@@ -582,7 +690,7 @@
                 return () => clearInterval(interval);
             }, [gameState.timerEnd]);
 
-            // Calculate aggregated team scores if needed
+            // Calculate aggregated team scores
             const teamScores = useMemo(() => {
                 if (gameState.gameMode !== 'teams') return null;
                 const scores = { red: 0, blue: 0, green: 0, yellow: 0 };
@@ -591,19 +699,6 @@
                 });
                 return scores;
             }, [gameState.players, gameState.gameMode]);
-
-            // Calculate Vote Leaders
-            const voteLeaders = useMemo(() => {
-                if (gameState.status !== 'lobby') return null;
-                const catVotes = {};
-                gameState.players.forEach(p => {
-                    const cat = p.votes?.category || '9';
-                    catVotes[cat] = (catVotes[cat] || 0) + 1;
-                });
-                const leaderId = Object.keys(catVotes).reduce((a, b) => catVotes[a] > catVotes[b] ? a : b, '9');
-                return CATEGORIES.find(c => c.id === leaderId)?.name;
-            }, [gameState.players, gameState.status]);
-
 
             return (
                 <div className="fixed inset-0 bg-slate-950 flex flex-col p-8 overflow-hidden z-50">
@@ -646,7 +741,7 @@
                         {gameState.status === 'lobby' && (
                             <div className="w-full text-center">
                                 <h2 className="text-3xl font-bold mb-8 text-slate-300">
-                                    Vote Leader: <span className="text-cyan-400">{voteLeaders}</span>
+                                    Vote Leader: <span className="text-cyan-400">N/A (Hidden)</span>
                                 </h2>
                                 <div className="grid grid-cols-4 gap-4">
                                     {gameState.players.map(p => (
@@ -657,6 +752,26 @@
                                             <div className="font-bold">{p.name}</div>
                                         </div>
                                     ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {gameState.status === 'category_vote' && (
+                            <div className="text-center w-full">
+                                <div className="text-6xl font-black font-mono text-cyan-400 mb-4">{timeLeft}</div>
+                                <h2 className="text-5xl font-black mb-12 text-white">VOTE FOR NEXT CATEGORY</h2>
+                                <div className="grid grid-cols-4 gap-6">
+                                    {CATEGORIES.map(c => {
+                                         // Calculate votes
+                                         const count = Object.values(gameState.liveVotes || {}).filter(v => v === c.id).length;
+                                         return (
+                                             <div key={c.id} className={`p-6 rounded-2xl bg-slate-800 border-2 transition-all ${count > 0 ? 'border-fuchsia-500 bg-fuchsia-900/20' : 'border-slate-700'}`}>
+                                                 <Icon name={c.icon} size={48} className={`mx-auto mb-4 ${count > 0 ? 'text-fuchsia-400' : 'text-slate-500'}`} />
+                                                 <div className="text-xl font-bold">{c.name}</div>
+                                                 {count > 0 && <div className="mt-2 text-2xl font-black text-white">{count}</div>}
+                                             </div>
+                                         )
+                                    })}
                                 </div>
                             </div>
                         )}
