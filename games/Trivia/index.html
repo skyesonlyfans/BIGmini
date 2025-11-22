@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trivia Party - BIGmini</title>
+    
+    <!-- 1. Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700;900&display=swap" rel="stylesheet">
+    
+    <!-- 3. React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- 4. Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- 5. Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        body { font-family: 'Outfit', sans-serif; }
+        
+        /* Animations */
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .animate-slide-up { animation: slideUp 0.5s ease-out forwards; }
+        
+        @keyframes popIn { 0% { transform: scale(0.9); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+        .animate-pop { animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+
+        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen selection:bg-cyan-500 selection:text-white">
+
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot, arrayUnion, increment, deleteField } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // --- CONFIGURATION ---
+        const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = {
+            apiKey: "AIzaSyCyCv-vpv1rUYSgMuVs0t1yMGu594pSKVQ",
+            authDomain: "bigminigamesbyskye.firebaseapp.com",
+            projectId: "bigminigamesbyskye",
+            storageBucket: "bigminigamesbyskye.firebasestorage.app",
+            messagingSenderId: "56463067198",
+            appId: "1:56463067198:web:ff2345bca309d67fbea96f",
+            measurementId: "G-13L8BVHXFD"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // --- UTILS ---
+        const Icon = ({ name, size = 24, className = "" }) => {
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons({
+                        root: iconRef.current ? iconRef.current.parentNode : document,
+                        name: name,
+                        attrs: { width: size, height: size, class: className }
+                    });
+                }
+            }, [name, size, className]);
+            return <i ref={iconRef} data-lucide={name} className={className}></i>;
+        };
+
+        const generateRoomCode = () => {
+            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+            let result = '';
+            for (let i = 0; i < 4; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
+            return result;
+        };
+
+        // Decodes HTML entities from API (e.g. &quot;)
+        const decodeHTML = (html) => {
+            const txt = document.createElement('textarea');
+            txt.innerHTML = html;
+            return txt.value;
+        };
+
+        // Shuffle array
+        const shuffle = (array) => {
+            return array.map(value => ({ value, sort: Math.random() }))
+                        .sort((a, b) => a.sort - b.sort)
+                        .map(({ value }) => value);
+        };
+
+        // --- COMPONENTS ---
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [view, setView] = useState('home'); 
+            const [roomCode, setRoomCode] = useState('');
+            const [gameState, setGameState] = useState(null);
+            const [error, setError] = useState('');
+            const [userName, setUserName] = useState('');
+
+            // Auth
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (err) {
+                        console.error("Auth Error", err);
+                        setError("Connection failed.");
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, setUser);
+                
+                // Check URL params
+                const params = new URLSearchParams(window.location.search);
+                if (params.get('room')) setRoomCode(params.get('room'));
+
+                return () => unsubscribe();
+            }, []);
+
+            // Game Sync
+            useEffect(() => {
+                if (!user || !roomCode) return;
+                
+                // PATH: artifacts/{appId}/public/data/rooms/trivia_room_{CODE}
+                const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rooms', `trivia_room_${roomCode}`);
+                
+                const unsubscribe = onSnapshot(roomRef, (snap) => {
+                    if (snap.exists()) {
+                        setGameState(snap.data());
+                        if (view === 'home' && snap.data().players.some(p => p.uid === user.uid)) {
+                            setView('lobby');
+                        }
+                    } else if (view !== 'home' && view !== 'spectator') {
+                        setError("Room closed.");
+                        setView('home');
+                    }
+                }, (err) => console.error(err));
+
+                return () => unsubscribe();
+            }, [user, roomCode, view]);
+
+            // --- ACTIONS ---
+
+            const createRoom = async () => {
+                if (!userName) return setError("Enter name");
+                const code = generateRoomCode();
+                setRoomCode(code);
+                
+                const initialState = {
+                    code,
+                    hostId: user.uid,
+                    status: 'lobby', // lobby, question, reveal, finished
+                    players: [{ uid: user.uid, name: userName, score: 0 }],
+                    currentQuestionIndex: 0,
+                    questions: [], 
+                    currentAnswers: {}, // Map { uid: answerString }
+                    timerEnd: 0,
+                    category: '9', // Default: General Knowledge
+                    difficulty: 'medium'
+                };
+
+                await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'rooms', `trivia_room_${code}`), initialState);
+                setView('lobby');
+            };
+
+            const joinRoom = async () => {
+                if (!userName || roomCode.length !== 4) return setError("Invalid input");
+                const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rooms', `trivia_room_${roomCode}`);
+                
+                try {
+                    const snap = await getDoc(roomRef);
+                    if (!snap.exists()) return setError("Room not found");
+                    const data = snap.data();
+                    
+                    if (!data.players.some(p => p.uid === user.uid)) {
+                        if (data.status !== 'lobby') return setError("Game in progress");
+                        await updateDoc(roomRef, {
+                            players: arrayUnion({ uid: user.uid, name: userName, score: 0 })
+                        });
+                    }
+                    setView('lobby');
+                } catch (e) { setError("Join failed"); }
+            };
+
+            // --- RENDER ---
+
+            if (!user) return <div className="h-screen flex items-center justify-center text-cyan-400">Loading Trivia Party...</div>;
+
+            return (
+                <div className="max-w-5xl mx-auto p-4 min-h-screen flex flex-col relative overflow-hidden">
+                    {/* Background Blobs */}
+                    <div className="absolute -top-20 -left-20 w-96 h-96 bg-cyan-600/20 rounded-full blur-[100px] pointer-events-none"></div>
+                    <div className="absolute top-1/2 -right-20 w-80 h-80 bg-fuchsia-600/20 rounded-full blur-[100px] pointer-events-none"></div>
+
+                    {/* Header */}
+                    {view !== 'spectator' && (
+                        <header className="relative z-10 flex justify-between items-center mb-6 py-4 border-b border-white/10">
+                            <div className="flex items-center gap-3">
+                                <a href="../../index.html" className="bg-slate-800 p-2 rounded-full hover:bg-slate-700 transition">
+                                    <Icon name="arrow-left" size={20} />
+                                </a>
+                                <div className="font-black text-2xl tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-fuchsia-400">
+                                    TRIVIA PARTY
+                                </div>
+                            </div>
+                            {roomCode && <div className="font-mono bg-slate-800 px-3 py-1 rounded text-cyan-400">{roomCode}</div>}
+                        </header>
+                    )}
+
+                    {error && (
+                        <div className="bg-red-500/20 border border-red-500 text-red-200 p-3 rounded-lg mb-4 flex justify-between">
+                            {error} <button onClick={() => setError('')}>&times;</button>
+                        </div>
+                    )}
+
+                    {view === 'home' && (
+                        <HomeView {...{ userName, setUserName, roomCode, setRoomCode, createRoom, joinRoom, enterSpectator: () => setView('spectator') }} />
+                    )}
+
+                    {view === 'lobby' && gameState && (
+                        <LobbyView {...{ gameState, user, db }} />
+                    )}
+
+                    {view === 'lobby' && gameState && gameState.status !== 'lobby' && (
+                        <GameController {...{ gameState, user, db }} />
+                    )}
+
+                    {view === 'spectator' && (
+                        <SpectatorView {...{ roomCode, gameState }} />
+                    )}
+                </div>
+            );
+        }
+
+        // --- SUB COMPONENTS ---
+
+        const HomeView = ({ userName, setUserName, roomCode, setRoomCode, createRoom, joinRoom, enterSpectator }) => (
+            <div className="flex-1 flex flex-col items-center justify-center animate-slide-up">
+                <div className="w-full max-w-md glass-panel p-8 rounded-2xl shadow-2xl">
+                    <div className="text-center mb-8">
+                        <Icon name="brain-circuit" size={48} className="mx-auto text-cyan-400 mb-4" />
+                        <h2 className="text-xl font-bold text-slate-300">Join the Quiz</h2>
+                    </div>
+
+                    <div className="space-y-4">
+                        <div>
+                            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">Nickname</label>
+                            <input type="text" value={userName} onChange={e => setUserName(e.target.value)} 
+                                className="w-full bg-slate-900/50 border border-slate-700 rounded-xl p-3 text-white focus:border-cyan-500 outline-none" placeholder="SmartyPants" />
+                        </div>
+                        
+                        <button onClick={createRoom} className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 hover:brightness-110 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2">
+                            <Icon name="plus-circle" size={18} /> Host Game
+                        </button>
+                        
+                        <div className="flex items-center gap-2">
+                            <input type="text" value={roomCode} onChange={e => setRoomCode(e.target.value.toUpperCase())} 
+                                className="w-24 bg-slate-900/50 border border-slate-700 rounded-xl p-3 text-center font-mono text-lg uppercase" placeholder="CODE" maxLength={4} />
+                            <button onClick={joinRoom} className="flex-1 bg-slate-700 hover:bg-slate-600 font-bold py-3 rounded-xl">Join</button>
+                        </div>
+                    </div>
+                    
+                    <button onClick={enterSpectator} className="w-full mt-6 text-slate-500 text-sm hover:text-cyan-400 flex justify-center gap-2">
+                        <Icon name="tv" size={16} /> TV / Spectator Mode
+                    </button>
+                </div>
+            </div>
+        );
+
+        const LobbyView = ({ gameState, user, db }) => {
+            if (gameState.status !== 'lobby') return null;
+            const isHost = gameState.hostId === user.uid;
+            const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rooms', `trivia_room_${gameState.code}`);
+
+            const updateSettings = (key, val) => updateDoc(roomRef, { [key]: val });
+
+            const startGame = async () => {
+                // Fetch Questions
+                try {
+                    const res = await fetch(`https://opentdb.com/api.php?amount=10&category=${gameState.category}&difficulty=${gameState.difficulty}&type=multiple`);
+                    const data = await res.json();
+                    
+                    if (data.response_code !== 0) throw new Error("API Error");
+
+                    const processedQuestions = data.results.map(q => ({
+                        question: decodeHTML(q.question),
+                        correctAnswer: decodeHTML(q.correct_answer),
+                        // Shuffle answers
+                        allAnswers: shuffle([...q.incorrect_answers, q.correct_answer].map(decodeHTML))
+                    }));
+
+                    await updateDoc(roomRef, {
+                        questions: processedQuestions,
+                        status: 'question',
+                        currentQuestionIndex: 0,
+                        timerEnd: Date.now() + 20000 // 20 seconds
+                    });
+                } catch (e) {
+                    alert("Failed to load questions. Try a different category.");
+                }
+            };
+
+            return (
+                <div className="flex flex-col md:flex-row gap-6 animate-pop">
+                    <div className="flex-1 glass-panel p-6 rounded-2xl">
+                        <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-cyan-400"><Icon name="settings" /> Settings</h2>
+                        
+                        {isHost ? (
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="text-xs text-slate-500 font-bold uppercase">Category</label>
+                                    <select value={gameState.category} onChange={e => updateSettings('category', e.target.value)} 
+                                        className="w-full bg-slate-900 p-2 rounded border border-slate-700 mt-1">
+                                        <option value="9">General Knowledge</option>
+                                        <option value="11">Film</option>
+                                        <option value="12">Music</option>
+                                        <option value="15">Video Games</option>
+                                        <option value="17">Science</option>
+                                        <option value="23">History</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="text-xs text-slate-500 font-bold uppercase">Difficulty</label>
+                                    <select value={gameState.difficulty} onChange={e => updateSettings('difficulty', e.target.value)} 
+                                        className="w-full bg-slate-900 p-2 rounded border border-slate-700 mt-1">
+                                        <option value="easy">Easy</option>
+                                        <option value="medium">Medium</option>
+                                        <option value="hard">Hard</option>
+                                    </select>
+                                </div>
+                                <button onClick={startGame} className="w-full bg-green-600 hover:bg-green-500 py-3 rounded-xl font-bold shadow-lg shadow-green-500/20 mt-4">
+                                    Start Game
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="text-slate-400 text-center py-8">
+                                <Icon name="coffee" className="mx-auto mb-2 opacity-50" />
+                                <p>Host is setting up...</p>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="flex-1 glass-panel p-6 rounded-2xl">
+                        <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-fuchsia-400"><Icon name="users" /> Players ({gameState.players.length})</h2>
+                        <div className="grid gap-2">
+                            {gameState.players.map(p => (
+                                <div key={p.uid} className="bg-slate-800 p-3 rounded-lg flex justify-between items-center">
+                                    <span>{p.name}</span>
+                                    {p.uid === gameState.hostId && <Icon name="crown" size={14} className="text-yellow-500" />}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const GameController = ({ gameState, user, db }) => {
+            const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rooms', `trivia_room_${gameState.code}`);
+            const isHost = gameState.hostId === user.uid;
+            
+            const currentQ = gameState.questions[gameState.currentQuestionIndex];
+            const myAnswer = gameState.currentAnswers?.[user.uid];
+
+            // --- HOST LOGIC ---
+            useEffect(() => {
+                if (!isHost) return;
+
+                const timer = setInterval(() => {
+                    const now = Date.now();
+                    // State Transitions handled by Host
+                    if (gameState.status === 'question' && now > gameState.timerEnd) {
+                         updateDoc(roomRef, { status: 'reveal' });
+                    }
+                }, 1000);
+
+                return () => clearInterval(timer);
+            }, [isHost, gameState.status, gameState.timerEnd]);
+
+            const submitAnswer = async (ans) => {
+                if (gameState.status !== 'question' || myAnswer) return;
+                // Use dot notation to update specific key in map
+                await updateDoc(roomRef, { [`currentAnswers.${user.uid}`]: ans });
+            };
+
+            const nextQuestion = async () => {
+                const isLast = gameState.currentQuestionIndex + 1 >= gameState.questions.length;
+                
+                // Calculate Scores
+                const newPlayers = gameState.players.map(p => {
+                    const ans = gameState.currentAnswers[p.uid];
+                    const isCorrect = ans === currentQ.correctAnswer;
+                    return isCorrect ? { ...p, score: p.score + 100 } : p;
+                });
+
+                if (isLast) {
+                    await updateDoc(roomRef, { players: newPlayers, status: 'finished' });
+                } else {
+                    await updateDoc(roomRef, { 
+                        players: newPlayers,
+                        status: 'question',
+                        currentQuestionIndex: gameState.currentQuestionIndex + 1,
+                        currentAnswers: {}, // Reset answers
+                        timerEnd: Date.now() + 20000 
+                    });
+                }
+            };
+
+            if (gameState.status === 'finished') return <Leaderboard gameState={gameState} />;
+
+            return (
+                <div className="max-w-xl mx-auto flex flex-col items-center">
+                    {/* Progress Bar */}
+                    <div className="w-full h-2 bg-slate-800 rounded-full mb-6 overflow-hidden">
+                        <div className="h-full bg-cyan-500 transition-all duration-1000" 
+                             style={{ width: `${((gameState.currentQuestionIndex + 1) / gameState.questions.length) * 100}%` }}></div>
+                    </div>
+
+                    <div className="glass-panel p-6 rounded-2xl w-full mb-6">
+                        <div className="text-xs text-slate-400 uppercase font-bold mb-2">Question {gameState.currentQuestionIndex + 1}</div>
+                        <h2 className="text-xl md:text-2xl font-bold leading-tight">{currentQ.question}</h2>
+                    </div>
+
+                    {gameState.status === 'question' && (
+                        <div className="grid grid-cols-1 gap-3 w-full">
+                            {currentQ.allAnswers.map((ans, i) => (
+                                <button key={i} onClick={() => submitAnswer(ans)}
+                                    disabled={!!myAnswer}
+                                    className={`p-4 rounded-xl text-left font-semibold transition-all ${
+                                        myAnswer === ans 
+                                            ? 'bg-cyan-600 border-2 border-cyan-400 text-white' 
+                                            : 'bg-slate-800 hover:bg-slate-700 border-2 border-transparent'
+                                    } ${!!myAnswer && myAnswer !== ans ? 'opacity-50' : ''}`}
+                                >
+                                    {ans}
+                                </button>
+                            ))}
+                        </div>
+                    )}
+
+                    {gameState.status === 'reveal' && (
+                        <div className="w-full text-center animate-pop">
+                            <div className="mb-6">
+                                <div className="text-slate-400 text-sm uppercase font-bold">Correct Answer</div>
+                                <div className="text-2xl font-bold text-green-400">{currentQ.correctAnswer}</div>
+                            </div>
+                            
+                            <div className={`p-4 rounded-xl mb-6 ${myAnswer === currentQ.correctAnswer ? 'bg-green-500/20 text-green-200' : 'bg-red-500/20 text-red-200'}`}>
+                                {myAnswer === currentQ.correctAnswer ? "You got it!" : "Missed it!"}
+                            </div>
+
+                            {isHost && (
+                                <button onClick={nextQuestion} className="w-full bg-cyan-600 hover:bg-cyan-500 py-4 rounded-xl font-bold text-white shadow-lg shadow-cyan-500/30">
+                                    Next Question <Icon name="arrow-right" size={18} className="inline ml-2"/>
+                                </button>
+                            )}
+                            {!isHost && <div className="text-slate-500 animate-pulse">Waiting for host...</div>}
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const SpectatorView = ({ roomCode, gameState }) => {
+            if (!gameState) return <div className="h-screen flex items-center justify-center text-slate-500">Connecting to {roomCode}...</div>;
+            
+            const currentQ = gameState.questions[gameState.currentQuestionIndex];
+            
+            // Timer logic for UI
+            const [timeLeft, setTimeLeft] = useState(0);
+            useEffect(() => {
+                const interval = setInterval(() => {
+                    const left = Math.max(0, Math.ceil((gameState.timerEnd - Date.now()) / 1000));
+                    setTimeLeft(left);
+                }, 100);
+                return () => clearInterval(interval);
+            }, [gameState.timerEnd]);
+
+            return (
+                <div className="fixed inset-0 bg-slate-950 flex flex-col p-8 overflow-hidden z-50">
+                     {/* BGFX */}
+                    <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                        <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] bg-cyan-600/10 rounded-full blur-3xl animate-pulse"></div>
+                    </div>
+
+                    {/* Header */}
+                    <div className="relative z-10 flex justify-between items-center mb-12 border-b border-white/10 pb-6">
+                        <div>
+                            <h1 className="text-4xl font-black bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-fuchsia-400">TRIVIA PARTY</h1>
+                            <div className="text-xl text-slate-400 mt-2">Room Code: <span className="font-mono text-white font-bold">{gameState.code}</span></div>
+                        </div>
+                        {gameState.status === 'lobby' && (
+                             <img src={`https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(window.location.href.split('?')[0] + `?room=${gameState.code}`)}&color=22d3ee&bgcolor=020617`} className="rounded-xl border-2 border-slate-700" alt="Join QR" />
+                        )}
+                    </div>
+
+                    {/* Content */}
+                    <div className="flex-grow flex flex-col justify-center items-center relative z-10 w-full max-w-6xl mx-auto">
+                        
+                        {gameState.status === 'lobby' && (
+                            <div className="grid grid-cols-4 gap-6 w-full">
+                                {gameState.players.map(p => (
+                                    <div key={p.uid} className="bg-slate-800 p-6 rounded-2xl border border-slate-700 flex flex-col items-center animate-pop">
+                                        <div className="w-16 h-16 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-full mb-4 flex items-center justify-center text-2xl font-bold">
+                                            {p.name[0]}
+                                        </div>
+                                        <div className="font-bold text-xl">{p.name}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {gameState.status === 'question' && (
+                            <div className="w-full">
+                                <div className="flex justify-between items-end mb-8">
+                                    <div className="text-cyan-400 font-bold tracking-widest uppercase">Question {gameState.currentQuestionIndex + 1}</div>
+                                    <div className="text-6xl font-black font-mono text-slate-700">{timeLeft}</div>
+                                </div>
+                                
+                                <h2 className="text-5xl font-bold leading-tight mb-12 text-center text-white">{currentQ.question}</h2>
+
+                                <div className="grid grid-cols-2 gap-6">
+                                    {currentQ.allAnswers.map((ans, i) => (
+                                        <div key={i} className="bg-slate-800/50 border border-slate-700 p-8 rounded-2xl text-2xl font-semibold text-slate-300">
+                                            {ans}
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Answer Bubbles */}
+                                <div className="mt-12 flex gap-2 justify-center flex-wrap">
+                                    {gameState.players.map(p => {
+                                        const hasAnswered = !!gameState.currentAnswers?.[p.uid];
+                                        return (
+                                            <div key={p.uid} className={`px-4 py-2 rounded-full border transition-all ${hasAnswered ? 'bg-green-500 border-green-400 text-white scale-110' : 'bg-slate-900 border-slate-700 text-slate-500'}`}>
+                                                {p.name}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        {gameState.status === 'reveal' && (
+                            <div className="w-full text-center">
+                                <div className="text-3xl font-bold text-slate-400 mb-4">The answer was...</div>
+                                <div className="text-6xl font-black text-green-400 mb-12 animate-pop">{currentQ.correctAnswer}</div>
+
+                                <div className="grid grid-cols-4 gap-6">
+                                    {gameState.players.map(p => {
+                                        const ans = gameState.currentAnswers[p.uid];
+                                        const isCorrect = ans === currentQ.correctAnswer;
+                                        return (
+                                            <div key={p.uid} className={`p-6 rounded-2xl border transition-all ${isCorrect ? 'bg-green-500/20 border-green-500' : 'bg-red-500/10 border-red-900 opacity-50'}`}>
+                                                <div className="font-bold text-xl mb-2">{p.name}</div>
+                                                <div className="text-sm opacity-80">{ans || "No Answer"}</div>
+                                                {isCorrect && <div className="mt-2 font-bold text-green-400">+100</div>}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+
+                        {gameState.status === 'finished' && <Leaderboard gameState={gameState} isTv={true} />}
+
+                    </div>
+                </div>
+            );
+        };
+
+        const Leaderboard = ({ gameState, isTv = false }) => {
+            const sorted = [...gameState.players].sort((a, b) => b.score - a.score);
+            return (
+                <div className={`w-full max-w-4xl mx-auto ${isTv ? 'scale-125 origin-top' : ''}`}>
+                    <h2 className="text-4xl font-black text-center mb-8 text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500">FINAL SCORES</h2>
+                    <div className="space-y-4">
+                        {sorted.map((p, i) => (
+                            <div key={p.uid} className={`flex items-center p-6 rounded-2xl border ${i===0 ? 'bg-yellow-500/20 border-yellow-500' : 'bg-slate-800 border-slate-700'}`}>
+                                <div className={`w-12 h-12 flex items-center justify-center rounded-full font-bold text-xl mr-6 ${i===0 ? 'bg-yellow-500 text-black' : 'bg-slate-700 text-slate-400'}`}>
+                                    {i + 1}
+                                </div>
+                                <div className="flex-1 font-bold text-2xl">{p.name}</div>
+                                <div className="font-mono text-3xl font-black text-cyan-400">{p.score}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
