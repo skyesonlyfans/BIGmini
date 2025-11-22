@@ -31,7 +31,7 @@
         @keyframes popIn { 0% { transform: scale(0.9); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
         .animate-pop { animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
 
-        .glass-panel { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .glass-panel { background: rgba(30, 41, 59, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
         
         /* Custom Range Slider */
         input[type=range]::-webkit-slider-thumb {
@@ -202,8 +202,8 @@
                     currentQuestionIndex: 0,
                     questions: [], 
                     currentAnswers: {}, 
-                    liveVotes: {}, // For mid-game voting
-                    timerEnd: 0,
+                    liveVotes: {}, 
+                    timeLeft: 20, // synced numeric timer
                     
                     // Settings
                     gameMode: 'ffa', // 'ffa' or 'teams'
@@ -323,7 +323,6 @@
             const isHost = gameState.hostId === user.uid;
             const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'rooms', `trivia_room_${gameState.code}`);
 
-            // Update specific player's data (Vote or Team)
             const updateMyData = async (field, value) => {
                 const newPlayers = gameState.players.map(p => 
                     p.uid === user.uid ? { ...p, [field]: value } : p
@@ -347,8 +346,6 @@
                 });
                 const winnerCat = Object.keys(catVotes).reduce((a, b) => catVotes[a] > catVotes[b] ? a : b);
                 
-                // Difficulty always medium for simplicity or voted? Let's use Medium default
-                // Fetch first 3 questions
                 try {
                     const res = await fetch(`https://opentdb.com/api.php?amount=3&category=${winnerCat}&difficulty=medium&type=multiple`);
                     const data = await res.json();
@@ -365,7 +362,7 @@
                         questions: processedQuestions,
                         status: 'question',
                         currentQuestionIndex: 0,
-                        timerEnd: Date.now() + (gameState.timerDuration * 1000)
+                        timeLeft: gameState.timerDuration || 20 // Initialize synced timer
                     });
                 } catch (e) {
                     console.error(e);
@@ -378,7 +375,6 @@
             return (
                 <div className="flex flex-col gap-6 animate-pop pb-12">
                     
-                    {/* Host Settings */}
                     {isHost && (
                         <div className="glass-panel p-6 rounded-2xl border-l-4 border-l-fuchsia-500">
                             <h2 className="text-lg font-bold mb-4 flex items-center gap-2"><Icon name="settings-2" /> Host Controls</h2>
@@ -392,14 +388,13 @@
                                 </div>
                                 <div className="flex-1 min-w-[200px]">
                                     <label className="text-xs font-bold uppercase text-slate-500 mb-1 block">Timer: {gameState.timerDuration}s</label>
-                                    <input type="range" min="10" max="30" step="5" value={gameState.timerDuration} onChange={e => updateDoc(roomRef, { timerDuration: parseInt(e.target.value) })} className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer" />
+                                    <input type="range" min="10" max="30" step="5" value={gameState.timerDuration || 20} onChange={e => updateDoc(roomRef, { timerDuration: parseInt(e.target.value) })} className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer" />
                                 </div>
                             </div>
                         </div>
                     )}
 
                     <div className="flex flex-col md:flex-row gap-6">
-                        {/* Player Voting */}
                         <div className="flex-1 glass-panel p-6 rounded-2xl">
                             <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-cyan-400"><Icon name="vote" /> Vote Round 1</h2>
                             <div className="space-y-4">
@@ -433,7 +428,6 @@
                             </div>
                         </div>
 
-                        {/* Player List */}
                         <div className="flex-1 glass-panel p-6 rounded-2xl">
                             <h2 className="text-xl font-bold mb-4 flex items-center gap-2 text-fuchsia-400"><Icon name="users" /> Players ({gameState.players.length})</h2>
                             <div className="grid gap-2 max-h-60 overflow-y-auto pr-2">
@@ -467,26 +461,28 @@
             const currentQ = gameState.questions[gameState.currentQuestionIndex];
             const myAnswer = gameState.currentAnswers?.[user.uid];
 
-            // --- HOST LOGIC ---
+            // --- HOST LOGIC (Synced Timer) ---
             useEffect(() => {
                 if (!isHost) return;
 
                 const timer = setInterval(() => {
-                    const now = Date.now();
-                    
-                    // Question Timeout
-                    if (gameState.status === 'question' && now > gameState.timerEnd) {
-                         updateDoc(roomRef, { status: 'reveal' });
-                    }
-                    
-                    // Vote Timeout
-                    if (gameState.status === 'category_vote' && now > gameState.timerEnd) {
-                        endCategoryVote();
+                    // Decrement logic
+                    if (gameState.status === 'question' || gameState.status === 'category_vote') {
+                        if (gameState.timeLeft > 0) {
+                            updateDoc(roomRef, { timeLeft: increment(-1) });
+                        } else {
+                             // Time is up
+                             if (gameState.status === 'question') {
+                                 updateDoc(roomRef, { status: 'reveal' });
+                             } else if (gameState.status === 'category_vote') {
+                                 endCategoryVote();
+                             }
+                        }
                     }
                 }, 1000);
 
                 return () => clearInterval(timer);
-            }, [isHost, gameState.status, gameState.timerEnd, gameState.liveVotes]);
+            }, [isHost, gameState.status, gameState.timeLeft]);
 
             const submitAnswer = async (ans) => {
                 if (gameState.status !== 'question' || myAnswer) return;
@@ -498,10 +494,8 @@
             }
 
             const endCategoryVote = async () => {
-                // Tally Live Votes
                 const votes = gameState.liveVotes || {};
                 const counts = {};
-                // If no votes, pick random
                 let winner = CATEGORIES[Math.floor(Math.random() * CATEGORIES.length)].id;
                 
                 if (Object.keys(votes).length > 0) {
@@ -510,7 +504,6 @@
                 }
 
                 try {
-                    // Fetch next batch of 3
                     const res = await fetch(`https://opentdb.com/api.php?amount=3&category=${winner}&difficulty=medium&type=multiple`);
                     const data = await res.json();
                     
@@ -520,19 +513,17 @@
                         allAnswers: shuffle([...q.incorrect_answers, q.correct_answer].map(decodeHTML))
                     }));
 
-                    // Append questions
                     const updatedQuestions = [...gameState.questions, ...newQuestions];
 
                     await updateDoc(roomRef, {
                         questions: updatedQuestions,
                         status: 'question',
-                        currentQuestionIndex: gameState.currentQuestionIndex + 1, // Advance to the new question
-                        timerEnd: Date.now() + (gameState.timerDuration * 1000)
+                        currentQuestionIndex: gameState.currentQuestionIndex + 1, 
+                        timeLeft: 15, // Vote round over, new question gets 15s (or setting)
                     });
 
                 } catch (e) {
                     console.error("Fetch failed", e);
-                    // If fail, maybe end game or retry? For now, end game.
                     await updateDoc(roomRef, { status: 'finished' });
                 }
             };
@@ -541,41 +532,41 @@
                 const currentIndex = gameState.currentQuestionIndex;
                 const totalQuestions = gameState.questions.length;
                 
-                // Calculate Scores
                 const newPlayers = gameState.players.map(p => {
                     const ans = gameState.currentAnswers[p.uid];
                     const isCorrect = ans === currentQ.correctAnswer;
                     return isCorrect ? { ...p, score: p.score + 100 } : p;
                 });
 
-                // Check if we need to vote for new category (Every 3 questions)
-                // e.g., Index 0, 1, 2 (Length 3). Next is 3. 3 % 3 == 0.
                 const nextIndex = currentIndex + 1;
+                const isVoteRound = (nextIndex % 3 === 0) && (nextIndex < 12);
                 
-                if (nextIndex >= totalQuestions) {
-                    // We need more questions! Trigger Vote.
-                    // Or if we hit max limit (say 12), finish.
-                    if (totalQuestions >= 12) {
+                if (nextIndex >= totalQuestions && !isVoteRound) {
+                    // End game if max limit reached or just finish
+                     if (totalQuestions >= 12) {
                         await updateDoc(roomRef, { players: newPlayers, status: 'finished' });
                     } else {
-                        // Enter Voting Phase
-                         await updateDoc(roomRef, { 
+                         // Should trigger vote but simple check:
+                         await updateDoc(roomRef, { players: newPlayers, status: 'finished' });
+                    }
+                } else {
+                    if (isVoteRound) {
+                        await updateDoc(roomRef, { 
                             players: newPlayers,
                             status: 'category_vote',
                             currentAnswers: {}, 
                             liveVotes: {},
-                            timerEnd: Date.now() + 15000 // 15s to vote
+                            timeLeft: 15 // 15s for voting
+                        });
+                    } else {
+                        await updateDoc(roomRef, { 
+                            players: newPlayers,
+                            status: 'question',
+                            currentQuestionIndex: nextIndex,
+                            currentAnswers: {}, 
+                            timeLeft: gameState.timerDuration || 20
                         });
                     }
-                } else {
-                    // Just next question
-                    await updateDoc(roomRef, { 
-                        players: newPlayers,
-                        status: 'question',
-                        currentQuestionIndex: nextIndex,
-                        currentAnswers: {}, 
-                        timerEnd: Date.now() + (gameState.timerDuration * 1000) 
-                    });
                 }
             };
 
@@ -585,9 +576,9 @@
                 return (
                     <div className="max-w-xl mx-auto flex flex-col items-center animate-pop">
                         <div className="w-full text-center mb-8">
+                            <div className="text-6xl font-black font-mono text-cyan-400 mb-4">{gameState.timeLeft}</div>
                             <h2 className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-fuchsia-400 to-cyan-400 mb-2">NEXT ROUND VOTE</h2>
                             <p className="text-slate-400">Choose the next category!</p>
-                            {isHost && <div className="text-xs mt-2 text-slate-500">Timer handles transition automatically</div>}
                         </div>
                         
                         <div className="grid grid-cols-2 gap-4 w-full">
@@ -615,13 +606,14 @@
                     {/* Progress & Score */}
                     <div className="w-full flex justify-between items-center mb-4 text-xs font-bold uppercase tracking-widest text-slate-500">
                         <span>Question {gameState.currentQuestionIndex + 1}</span>
-                        <span className="text-cyan-400">Score: {gameState.players.find(p => p.uid === user.uid)?.score || 0}</span>
+                        <span className="text-cyan-400 text-lg">Score: {gameState.players.find(p => p.uid === user.uid)?.score || 0}</span>
                     </div>
                     
-                    <div className="w-full h-2 bg-slate-800 rounded-full mb-6 overflow-hidden">
-                        {/* Progress based on 12 max questions approx */}
-                        <div className="h-full bg-cyan-500 transition-all duration-1000" 
-                             style={{ width: `${((gameState.currentQuestionIndex + 1) / 12) * 100}%` }}></div>
+                    <div className="flex items-center gap-4 w-full mb-6">
+                        <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+                            <div className="h-full bg-cyan-500 transition-all duration-1000" style={{ width: `${((gameState.currentQuestionIndex + 1) / 12) * 100}%` }}></div>
+                        </div>
+                        <div className="font-mono text-2xl font-black text-white w-8 text-center">{gameState.timeLeft}</div>
                     </div>
 
                     <div className="glass-panel p-6 rounded-2xl w-full mb-6">
@@ -679,18 +671,6 @@
             if (!gameState) return <div className="h-screen flex items-center justify-center text-slate-500">Connecting to {roomCode}...</div>;
             
             const currentQ = gameState.questions?.[gameState.currentQuestionIndex];
-            
-            // Timer logic for UI
-            const [timeLeft, setTimeLeft] = useState(0);
-            useEffect(() => {
-                const interval = setInterval(() => {
-                    const left = Math.max(0, Math.ceil((gameState.timerEnd - Date.now()) / 1000));
-                    setTimeLeft(left);
-                }, 100);
-                return () => clearInterval(interval);
-            }, [gameState.timerEnd]);
-
-            // Calculate aggregated team scores
             const teamScores = useMemo(() => {
                 if (gameState.gameMode !== 'teams') return null;
                 const scores = { red: 0, blue: 0, green: 0, yellow: 0 };
@@ -702,12 +682,10 @@
 
             return (
                 <div className="fixed inset-0 bg-slate-950 flex flex-col p-8 overflow-hidden z-50">
-                     {/* BGFX */}
                     <div className="absolute inset-0 overflow-hidden pointer-events-none">
                         <div className="absolute top-1/4 left-1/4 w-[500px] h-[500px] bg-cyan-600/10 rounded-full blur-3xl animate-pulse"></div>
                     </div>
 
-                    {/* Header */}
                     <div className="relative z-10 flex justify-between items-center mb-8 border-b border-white/10 pb-4">
                         <div>
                             <h1 className="text-4xl font-black bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-fuchsia-400">TRIVIA PARTY</h1>
@@ -735,9 +713,7 @@
                          )}
                     </div>
 
-                    {/* Content */}
                     <div className="flex-grow flex flex-col justify-center items-center relative z-10 w-full max-w-6xl mx-auto">
-                        
                         {gameState.status === 'lobby' && (
                             <div className="w-full text-center">
                                 <h2 className="text-3xl font-bold mb-8 text-slate-300">
@@ -758,11 +734,10 @@
 
                         {gameState.status === 'category_vote' && (
                             <div className="text-center w-full">
-                                <div className="text-6xl font-black font-mono text-cyan-400 mb-4">{timeLeft}</div>
+                                <div className="text-6xl font-black font-mono text-cyan-400 mb-4">{gameState.timeLeft}</div>
                                 <h2 className="text-5xl font-black mb-12 text-white">VOTE FOR NEXT CATEGORY</h2>
                                 <div className="grid grid-cols-4 gap-6">
                                     {CATEGORIES.map(c => {
-                                         // Calculate votes
                                          const count = Object.values(gameState.liveVotes || {}).filter(v => v === c.id).length;
                                          return (
                                              <div key={c.id} className={`p-6 rounded-2xl bg-slate-800 border-2 transition-all ${count > 0 ? 'border-fuchsia-500 bg-fuchsia-900/20' : 'border-slate-700'}`}>
@@ -780,7 +755,7 @@
                             <div className="w-full">
                                 <div className="flex justify-between items-end mb-8">
                                     <div className="text-cyan-400 font-bold tracking-widest uppercase">Question {gameState.currentQuestionIndex + 1}</div>
-                                    <div className="text-6xl font-black font-mono text-slate-700">{timeLeft}</div>
+                                    <div className="text-6xl font-black font-mono text-slate-700">{gameState.timeLeft}</div>
                                 </div>
                                 
                                 <h2 className="text-5xl font-bold leading-tight mb-12 text-center text-white">{currentQ.question}</h2>
@@ -793,7 +768,6 @@
                                     ))}
                                 </div>
 
-                                {/* Answer Bubbles */}
                                 <div className="mt-12 flex gap-2 justify-center flex-wrap">
                                     {gameState.players.map(p => {
                                         const hasAnswered = !!gameState.currentAnswers?.[p.uid];
@@ -845,7 +819,6 @@
             return (
                 <div className={`w-full max-w-5xl mx-auto flex gap-12 ${isTv ? 'scale-110 origin-top' : ''}`}>
                     
-                    {/* Team Podiums (If Team Mode) */}
                     {teamScores && (
                         <div className="flex-1">
                             <h2 className="text-2xl font-black mb-6 uppercase text-slate-400">Team Standings</h2>
@@ -861,7 +834,6 @@
                         </div>
                     )}
 
-                    {/* Individual Rankings */}
                     <div className="flex-1">
                         <h2 className="text-2xl font-black mb-6 uppercase text-slate-400">Individual MVPs</h2>
                         <div className="space-y-3">
