@@ -51,15 +51,16 @@
         let initError = null;
 
         try {
-            // Attempt to parse config or use fallback
-            const rawConfig = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
-            const firebaseConfig = JSON.parse(rawConfig);
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
-            // Validate Config
-            if (!firebaseConfig || !firebaseConfig.apiKey) {
-                throw new Error("Firebase API Key is missing. Check your environment configuration.");
-            }
+            // User provided configuration
+            const firebaseConfig = {
+                apiKey: "AIzaSyCyCv-vpv1rUYSgMuVs0t1yMGu594pSKVQ",
+                authDomain: "bigminigamesbyskye.firebaseapp.com",
+                projectId: "bigminigamesbyskye",
+                storageBucket: "bigminigamesbyskye.firebasestorage.app",
+                messagingSenderId: "56463067198",
+                appId: "1:56463067198:web:ff2345bca309d67fbea96f",
+                measurementId: "G-13L8BVHXFD"
+            };
             
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
@@ -70,6 +71,7 @@
             initError = e.message;
         }
 
+        // Use global app ID for data separation if provided, otherwise default
         const APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
         // --- ICON COMPONENT ---
@@ -106,7 +108,7 @@
                             <h1 className="text-2xl font-bold mb-2">Connection Error</h1>
                             <p className="text-slate-300 mb-4">{initError}</p>
                             <div className="text-xs text-slate-500 bg-slate-950 p-3 rounded font-mono text-left overflow-auto">
-                                Ensure __firebase_config is injected correctly.
+                                Ensure your Firebase keys are valid.
                             </div>
                         </div>
                     </div>
@@ -150,6 +152,7 @@
             useEffect(() => {
                 if (!user || !roomCode || !db) return;
                 
+                // Using APP_ID for the collection path to keep data organized
                 const roomRef = doc(db, 'artifacts', APP_ID, 'public', 'data', `sb_room_${roomCode}`);
                 
                 const unsubscribe = onSnapshot(roomRef, (snapshot) => {
